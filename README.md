@@ -14,14 +14,15 @@ go get github.com/peterneutron/go-iokit-powertelemetry/iokit
 
 ## Usage
 
+Here is a minimal example of how to import and use the library in your own project.
+
 ```go
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-
+	
 	"github.com/peterneutron/go-iokit-powertelemetry/iokit"
 )
 
@@ -31,12 +32,79 @@ func main() {
 		log.Fatalf("Error getting battery info: %v", err)
 	}
 
-	jsonData, err := json.MarshalIndent(info, "", "  ")
-	if err != nil {
-		log.Fatalf("Error marshalling to JSON: %v", err)
-	}
+	// You can now access any value from the info struct.
+	// For example, to get the cycle count and estimated health:
+	fmt.Printf("Cycle Count: %d\n", info.Health.CycleCount)
+	fmt.Printf("Estimated Official Health: %.2f%%\n", info.Calculations.EstimatedOfficialHealth)
+}
+```
 
-	fmt.Println(string(jsonData))
+### Running the Full Example
+
+The repository includes an example that prints all retrieved data as a JSON object. To run it:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/peterneutron/go-iokit-powertelemetry.git
+    cd go-iokit-powertelemetry
+    ```
+
+2.  **Run the simple dump example:**
+    ```bash
+    go run ./examples/simple-dump
+    ```
+
+**Example Output:**
+
+```json
+{
+  "IsCharging": false,
+  "IsConnected": false,
+  "FullyCharged": false,
+  "Health": {
+    "CycleCount": 180
+  },
+  "Capacity": {
+    "DesignCapacity": 8579,
+    "MaxCapacity": 7701,
+    "NominalCapacity": 7945
+  },
+  "Charge": {
+    "CurrentCapacity": 2745,
+    "TimeToEmpty": 178,
+    "TimeToFull": 65535
+  },
+  "Temperature": {
+    "Battery": 30.6,
+    "IndividualCellVoltages": [
+      3783,
+      3785,
+      3784
+    ]
+  },
+  "Power": {
+    "Voltage": 11.353,
+    "Amperage": -0.92
+  },
+  "Hardware": {
+    "SerialNumber": "xxxxxxxxxxxxxxxxxx",
+    "DeviceName": "xxxxxxxx"
+  },
+  "Adapter": {
+    "Watts": 65,
+    "Voltage": 20,
+    "Amperage": 3.25,
+    "Description": "pd charger"
+  },
+  "PowerSourceInput": {
+    "Voltage": 20.188,
+    "Amperage": 0.005
+  },
+  "Calculations": {
+    "HealthPercentage": 89.765706958853,
+    "NominalHealthPercentage": 92.60986128919454,
+    "EstimatedOfficialHealth": 95.10986128919454
+  }
 }
 ```
 
