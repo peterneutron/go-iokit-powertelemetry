@@ -49,6 +49,10 @@ typedef struct {
     long source_voltage;
     long source_amperage;
 
+	// --- NEW FIELDS FOR CELL VOLTAGES ---
+    long cell_voltages[16]; // Assume max 16 cells, more than enough
+    int  cell_voltage_count;
+
 } c_battery_info;
 
 // Helper to safely get a long integer value from a CFDictionary.
@@ -112,6 +116,33 @@ static CFDictionaryRef get_dict_prop(CFDictionaryRef dict, const char *key) {
     return NULL;
 }
 
+// --- NEW HELPER FUNCTION for parsing arrays ---
+static void get_long_array_prop(CFDictionaryRef dict, const char *key, long *out_array, int max_count, int *final_count) {
+    *final_count = 0;
+    CFStringRef key_ref = CFStringCreateWithCString(NULL, key, kCFStringEncodingUTF8);
+    if (!key_ref) return;
+
+    CFTypeRef value_ref = CFDictionaryGetValue(dict, key_ref);
+    CFRelease(key_ref);
+
+    if (value_ref != NULL && CFGetTypeID(value_ref) == CFArrayGetTypeID()) {
+        CFArrayRef array_ref = (CFArrayRef)value_ref;
+        CFIndex count = CFArrayGetCount(array_ref);
+        if (count > max_count) {
+            count = max_count; // Prevent buffer overflow
+        }
+        *final_count = (int)count;
+
+        for (CFIndex i = 0; i < count; i++) {
+            CFNumberRef num_ref = (CFNumberRef)CFArrayGetValueAtIndex(array_ref, i);
+            if (num_ref != NULL && CFGetTypeID(num_ref) == CFNumberGetTypeID()) {
+                CFNumberGetValue(num_ref, kCFNumberSInt64Type, &out_array[i]);
+            } else {
+                out_array[i] = 0; // Default value if type is wrong
+            }
+        }
+    }
+}
 
 // The core C function to get all battery properties.
 // Returns 0 on success, non-zero on error.
@@ -175,6 +206,13 @@ int get_all_battery_info(c_battery_info *info) {
     if (power_telemetry) {
         info->source_voltage = get_long_prop(power_telemetry, "SystemVoltageIn");
         info->source_amperage = get_long_prop(power_telemetry, "SystemCurrentIn");
+    }
+
+	// Get cell voltages from the nested BatteryData dictionary ---
+    CFDictionaryRef battery_data = get_dict_prop(properties, "BatteryData");
+    if (battery_data) {
+        // We know CellVoltage is inside BatteryData
+        get_long_array_prop(battery_data, "CellVoltage", info->cell_voltages, 16, &info->cell_voltage_count);
     }
 
     // --- End of data population ---
@@ -245,9 +283,22 @@ func GetBatteryInfo() (*BatteryInfo, error) {
 		},
 	}
 
+	if c_info.cell_voltage_count > 0 {
+		// Create a Go slice of the exact correct size.
+		info.Temperature.IndividualCellVoltages = make([]int, c_info.cell_voltage_count)
+
+		// Unsafe cast to a Go-accessible array pointer. This is a standard CGO pattern.
+		c_voltages_ptr := &c_info.cell_voltages
+
+		// Copy the values from the C array to our new Go slice.
+		for i := 0; i < int(c_info.cell_voltage_count); i++ {
+			info.Temperature.IndividualCellVoltages[i] = int(c_voltages_ptr[i])
+		}
+	}
+
 	// We'll leave IndividualCellVoltages for a future iteration, as it requires parsing an array.
 	// For now, it will be a nil slice.
-
+	calculateHealthMetrics(info)
 	return info, nil
 }
 
@@ -271,6 +322,7 @@ type BatteryInfo struct {
 	Hardware         Hardware
 	Adapter          Adapter
 	PowerSourceInput PowerSourceInput
+	Calculations     Calculations
 }
 
 // Health contains metrics related to the battery's long-term condition.
@@ -346,4 +398,68 @@ type PowerSourceInput struct {
 	Voltage float64
 	// Amperage is the actual current being drawn by the system in Amps.
 	Amperage float64
+}
+
+// Calculations contains experimental, derived health metrics based on the raw data.
+// These are provided for convenience and may not match official system reporting.
+type Calculations struct {
+	// HealthPercentage is the "physical" health based on raw max capacity. (AppleRawMaxCapacity / DesignCapacity)
+	HealthPercentage float64
+	// NominalHealthPercentage is the health based on the more stable nominal capacity. (NominalCapacity / DesignCapacity)
+	NominalHealthPercentage float64
+	// EstimatedOfficialHealth is our reverse-engineered formula, blending NominalHealth and a bonus/penalty for cell voltage drift.
+	EstimatedOfficialHealth float64
+}
+
+func calculateHealthMetrics(info *BatteryInfo) {
+	// Avoid division by zero if DesignCapacity is somehow missing
+	if info.Capacity.DesignCapacity == 0 {
+		return
+	}
+
+	designCapF := float64(info.Capacity.DesignCapacity)
+
+	// Basic physical health
+	info.Calculations.HealthPercentage = (float64(info.Capacity.MaxCapacity) / designCapF) * 100.0
+
+	// Nominal health (our BaseHealth)
+	baseHealth := (float64(info.Capacity.NominalCapacity) / designCapF) * 100.0
+	info.Calculations.NominalHealthPercentage = baseHealth
+
+	// Experimental Official Health
+	var conditionModifier float64
+	if len(info.Temperature.IndividualCellVoltages) > 1 {
+		minV, maxV := findMinMax(info.Temperature.IndividualCellVoltages)
+		drift := maxV - minV
+
+		switch {
+		case drift <= 5:
+			conditionModifier = 2.5
+		case drift <= 15:
+			conditionModifier = 1.0
+		case drift <= 30:
+			conditionModifier = 0.0
+		case drift <= 50:
+			conditionModifier = -2.0
+		default:
+			conditionModifier = -10.0
+		}
+	}
+
+	info.Calculations.EstimatedOfficialHealth = baseHealth + conditionModifier
+}
+
+// Helper to find min/max in a slice
+func findMinMax(a []int) (min int, max int) {
+	min = a[0]
+	max = a[0]
+	for _, value := range a {
+		if value < min {
+			min = value
+		}
+		if value > max {
+			max = value
+		}
+	}
+	return min, max
 }
