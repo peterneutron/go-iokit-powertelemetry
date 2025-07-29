@@ -1,5 +1,9 @@
 # Go IOKit Power Telemetry
 
+⚠️ Pre-Release Software Notice ⚠️
+
+This library is in its initial development phase (v0.x.x). The API is not yet stable and is subject to breaking changes in future releases. Please use with caution and consider pinning to a specific version in your project.
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/peterneutron/go-iokit-powertelemetry.svg)](https://pkg.go.dev/github.com/peterneutron/go-iokit-powertelemetry)
 
 A dependency-free Go library for accessing raw macOS power and battery telemetry directly from the underlying IOKit services.
