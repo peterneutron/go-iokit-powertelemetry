@@ -2,19 +2,22 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/peterneutron/go-iokit-powertelemetry.svg)](https://pkg.go.dev/github.com/peterneutron/go-iokit-powertelemetry)
 
-A dependency-free Go library for directly accessing macOS power and battery telemetry using IOKit.
+A dependency-free Go library for accessing raw macOS power and battery telemetry directly from the underlying IOKit services.
 
-This library bypasses command-line tools like `system_profiler` to get raw, unformatted data directly from the `AppleSmartBattery` kernel service.
+## Features
+
+*   **Direct Hardware Access**: Get data directly from the `AppleSmartBattery` kernel service.
+*   **Zero Dependencies**: A lightweight solution with no external Go modules required.
+*   **Comprehensive Data**: Provides a detailed snapshot of capacity, charge state, cycle count, temperatures, cell voltages, and adapter information.
+*   **Advanced Health Metrics**: Goes beyond raw data to provide calculated, easy-to-understand battery health percentages.
 
 ## Installation
 
 ```bash
-go get github.com/peterneutron/go-iokit-powertelemetry/iokit
+go get github.com/peterneutron/go-iokit-powertelemetry
 ```
 
-## Usage
-
-Here is a minimal example of how to import and use the library in your own project.
+## Quick Start
 
 ```go
 package main
@@ -32,16 +35,48 @@ func main() {
 		log.Fatalf("Error getting battery info: %v", err)
 	}
 
-	// You can now access any value from the info struct.
-	// For example, to get the cycle count and estimated health:
+	// Access raw data and calculated health metrics
 	fmt.Printf("Cycle Count: %d\n", info.Health.CycleCount)
-	fmt.Printf("Estimated Official Health: %.2f%%\n", info.Calculations.EstimatedOfficialHealth)
+	fmt.Printf("Health by Max Capacity: %d%%\n", info.Calculations.HealthByMaxCapacity)
+	fmt.Printf("Condition-Adjusted Health: %d%%\n", info.Calculations.ConditionAdjustedHealth)
 }
 ```
 
-### Running the Full Example
+## Understanding the Data
 
-The repository includes an example that prints all retrieved data as a JSON object. To run it:
+The library provides both raw capacity metrics and derived health calculations.
+
+### Core Capacity Metrics
+
+These values are read directly from IOKit and form the basis for all health calculations.
+
+| Field                     | Data Source               | Description                                                                                             |
+| ------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `Capacity.DesignCapacity` | `DesignCapacity`          | The factory-rated capacity of a brand-new battery. This is the baseline for all health calculations.                      |
+| `Capacity.MaxCapacity`    | `AppleRawMaxCapacity`     | The current, real-world maximum capacity. This reflects aging and any temporary limits imposed by macOS (e.g., Optimized Battery Charging) and can fluctuate.     |
+| `Capacity.NominalCapacity`| `NominalChargeCapacity`   | A more stable, smoothed historical capacity value that is less prone to short-term fluctuations.        |
+
+### How Health is Calculated
+
+The `Calculations` struct provides several health percentages, rounded to the nearest whole number.
+
+> #### `Calculations.HealthByMaxCapacity`
+>
+> **Formula:** `(MaxCapacity / DesignCapacity) * 100`
+
+> #### `Calculations.HealthByNominalCapacity`
+>
+> **Formula:** `(NominalCapacity / DesignCapacity) * 100`
+
+> #### `Calculations.ConditionAdjustedHealth`
+>
+> **Formula:** `HealthByNominalCapacity + Condition Modifier`
+>
+> This is an experimental metric that attempts to estimate the health percentage shown by macOS. It starts with the stable `HealthByNominalCapacity` and applies a bonus or penalty based on the **voltage drift** between the battery's internal cell blocks (`Battery.IndividualCellVoltages`). A well-balanced battery with low drift receives a health bonus, while an imbalanced battery is penalized, providing a more holistic view of its condition.
+
+## Full Data Example
+
+You can run the included example to see all available data fields.
 
 1.  **Clone the repository:**
     ```bash
@@ -49,12 +84,12 @@ The repository includes an example that prints all retrieved data as a JSON obje
     cd go-iokit-powertelemetry
     ```
 
-2.  **Run the simple dump example:**
+2.  **Run the example:**
     ```bash
     go run ./examples/simple-dump
     ```
 
-**Example Output:**
+**Example Output (reflects new structure):**
 
 ```json
 {
@@ -74,8 +109,8 @@ The repository includes an example that prints all retrieved data as a JSON obje
     "TimeToEmpty": 178,
     "TimeToFull": 65535
   },
-  "Temperature": {
-    "Battery": 30.6,
+  "Battery": {
+    "Temperature": 30.6,
     "IndividualCellVoltages": [
       3783,
       3785,
@@ -101,25 +136,9 @@ The repository includes an example that prints all retrieved data as a JSON obje
     "Amperage": 0.005
   },
   "Calculations": {
-    "HealthPercentage": 89.765706958853,
-    "NominalHealthPercentage": 92.60986128919454,
-    "EstimatedOfficialHealth": 95.10986128919454
+    "HealthByMaxCapacity": 90,
+    "HealthByNominalCapacity": 93,
+    "ConditionAdjustedHealth": 95
   }
 }
 ```
-
-## Understanding Health Metrics
-
-This library provides several capacity and health values. Understanding the difference is key to interpreting the data correctly.
-
-*   **`Capacity.DesignCapacity`**: The original, "as-new" capacity of the battery in mAh. This value does not change.
-*   **`Capacity.MaxCapacity`**: The battery's current, real-world maximum capacity as estimated by the Battery Management System (BMS). This value degrades over time and can fluctuate slightly based on recent charge cycles. It corresponds to IOKit's `AppleRawMaxCapacity`.
-*   **`Capacity.NominalCapacity`**: A more stable, smoothed historical capacity value. This is less prone to short-term fluctuations than `MaxCapacity`.
-
-Based on these values, the `Calculations` struct provides several experimental health percentages:
-
-*   **`Calculations.HealthPercentage`**: Calculated as `(MaxCapacity / DesignCapacity)`. This represents the "true" physical health of the battery's chemistry at this moment.
-*   **`Calculations.NominalHealthPercentage`**: Calculated as `(NominalCapacity / DesignCapacity)`. This is a more stable health percentage.
-*   **`Calculations.EstimatedOfficialHealth`**: Our reverse-engineered formula that attempts to replicate the percentage shown in macOS's System Settings. It uses `NominalHealthPercentage` as a base and applies a bonus or penalty based on the balance of the battery's cell blocks (`IndividualCellVoltages`). A well-balanced battery receives a health bonus.
-
-**Note:** The official percentage shown by Apple is proprietary and not directly exposed by IOKit. `EstimatedOfficialHealth` is a best-effort calculation and is provided for experimental purposes.
