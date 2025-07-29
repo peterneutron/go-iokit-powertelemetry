@@ -152,9 +152,9 @@ int get_all_battery_info(c_battery_info *info) {
     if (matching == NULL) return 1;
 
     io_iterator_t iterator;
+
+	// IOServiceGetMatchingServices always consumes the 'matching' dictionary reference.
     if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) != KERN_SUCCESS) {
-        // matching is consumed by the call, no need to release it on success
-        CFRelease(matching);
         return 2;
     }
 
