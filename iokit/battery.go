@@ -225,6 +225,7 @@ int get_all_battery_info(c_battery_info *info) {
 import "C"
 import (
 	"fmt"
+	"math"
 )
 
 // GetBatteryInfo queries IOKit for all available power and battery telemetry
@@ -258,9 +259,9 @@ func GetBatteryInfo() (*BatteryInfo, error) {
 			TimeToEmpty:     int(c_info.time_to_empty),
 			TimeToFull:      int(c_info.time_to_full),
 		},
-		Temperature: Temperature{
+		Battery: Battery{
 			// IOKit reports temperature in hundredths of a degree Celsius.
-			Battery: float64(c_info.temperature) / 100.0,
+			Temperature: float64(c_info.temperature) / 100.0,
 		},
 		Power: Power{
 			// IOKit reports voltage in mV and amperage in mA.
@@ -285,19 +286,18 @@ func GetBatteryInfo() (*BatteryInfo, error) {
 
 	if c_info.cell_voltage_count > 0 {
 		// Create a Go slice of the exact correct size.
-		info.Temperature.IndividualCellVoltages = make([]int, c_info.cell_voltage_count)
+		info.Battery.IndividualCellVoltages = make([]int, c_info.cell_voltage_count)
 
 		// Unsafe cast to a Go-accessible array pointer. This is a standard CGO pattern.
 		c_voltages_ptr := &c_info.cell_voltages
 
 		// Copy the values from the C array to our new Go slice.
 		for i := 0; i < int(c_info.cell_voltage_count); i++ {
-			info.Temperature.IndividualCellVoltages[i] = int(c_voltages_ptr[i])
+			info.Battery.IndividualCellVoltages[i] = int(c_voltages_ptr[i])
 		}
 	}
 
-	// We'll leave IndividualCellVoltages for a future iteration, as it requires parsing an array.
-	// For now, it will be a nil slice.
+	// Calculate derived health metrics based on the collected data.
 	calculateHealthMetrics(info)
 	return info, nil
 }
@@ -317,7 +317,7 @@ type BatteryInfo struct {
 	Health           Health
 	Capacity         Capacity
 	Charge           Charge
-	Temperature      Temperature
+	Battery          Battery
 	Power            Power
 	Hardware         Hardware
 	Adapter          Adapter
@@ -355,9 +355,9 @@ type Charge struct {
 }
 
 // Temperature contains temperature readings in Celsius.
-type Temperature struct {
+type Battery struct {
 	// Battery is the primary temperature of the battery pack.
-	Battery float64
+	Temperature float64
 	// IndividualCellVoltages contains the voltage of each cell block in millivolts (mV).
 	IndividualCellVoltages []int
 }
@@ -404,11 +404,11 @@ type PowerSourceInput struct {
 // These are provided for convenience and may not match official system reporting.
 type Calculations struct {
 	// HealthPercentage is the "physical" health based on raw max capacity. (AppleRawMaxCapacity / DesignCapacity)
-	HealthPercentage float64
+	HealthByMaxCapacity int
 	// NominalHealthPercentage is the health based on the more stable nominal capacity. (NominalCapacity / DesignCapacity)
-	NominalHealthPercentage float64
+	HealthByNominalCapacity int
 	// EstimatedOfficialHealth is our reverse-engineered formula, blending NominalHealth and a bonus/penalty for cell voltage drift.
-	EstimatedOfficialHealth float64
+	ConditionAdjustedHealth int
 }
 
 func calculateHealthMetrics(info *BatteryInfo) {
@@ -419,34 +419,37 @@ func calculateHealthMetrics(info *BatteryInfo) {
 
 	designCapF := float64(info.Capacity.DesignCapacity)
 
-	// Basic physical health
-	info.Calculations.HealthPercentage = (float64(info.Capacity.MaxCapacity) / designCapF) * 100.0
+	// Calculate health based on the raw maximum capacity.
+	healthByMax := (float64(info.Capacity.MaxCapacity) / designCapF) * 100.0
+	info.Calculations.HealthByMaxCapacity = int(math.Round(healthByMax))
 
-	// Nominal health (our BaseHealth)
-	baseHealth := (float64(info.Capacity.NominalCapacity) / designCapF) * 100.0
-	info.Calculations.NominalHealthPercentage = baseHealth
+	// Calculate health based on the smoothed, nominal capacity. This is our base for further calcs.
+	healthByNominal := (float64(info.Capacity.NominalCapacity) / designCapF) * 100.0
+	info.Calculations.HealthByNominalCapacity = int(math.Round(healthByNominal))
 
-	// Experimental Official Health
+	// Calculate the condition modifier based on cell voltage drift.
 	var conditionModifier float64
-	if len(info.Temperature.IndividualCellVoltages) > 1 {
-		minV, maxV := findMinMax(info.Temperature.IndividualCellVoltages)
+	if len(info.Battery.IndividualCellVoltages) > 1 {
+		minV, maxV := findMinMax(info.Battery.IndividualCellVoltages)
 		drift := maxV - minV
 
 		switch {
 		case drift <= 5:
-			conditionModifier = 2.5
+			conditionModifier = 2.5 // Excellent condition bonus
 		case drift <= 15:
-			conditionModifier = 1.0
+			conditionModifier = 1.0 // Good condition bonus
 		case drift <= 30:
-			conditionModifier = 0.0
+			conditionModifier = 0.0 // Normal condition
 		case drift <= 50:
-			conditionModifier = -2.0
+			conditionModifier = -2.0 // Fair condition penalty
 		default:
-			conditionModifier = -10.0
+			conditionModifier = -10.0 // Poor condition penalty
 		}
 	}
 
-	info.Calculations.EstimatedOfficialHealth = baseHealth + conditionModifier
+	// Apply the modifier to the nominal health to get our final estimate.
+	adjustedHealth := healthByNominal + conditionModifier
+	info.Calculations.ConditionAdjustedHealth = int(math.Round(adjustedHealth))
 }
 
 // Helper to find min/max in a slice
