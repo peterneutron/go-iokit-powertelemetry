@@ -30,11 +30,11 @@ import (
 	"fmt"
 	"log"
 	
-	"github.com/peterneutron/go-iokit-powertelemetry/iokit"
+	"github.com/peterneutron/go-iokit-powertelemetry/power"
 )
 
 func main() {
-	info, err := iokit.GetBatteryInfo()
+	info, err := power.GetBatteryInfo()
 	if err != nil {
 		log.Fatalf("Error getting battery info: %v", err)
 	}
