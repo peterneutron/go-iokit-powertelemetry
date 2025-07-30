@@ -5,17 +5,16 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/peterneutron/go-iokit-powertelemetry/iokit"
+	"github.com/peterneutron/go-iokit-powertelemetry/power"
 )
 
 func main() {
-	info, err := iokit.GetBatteryInfo()
+	info, err := power.GetBatteryInfo()
 	if err != nil {
 		log.Fatalf("Error getting battery info: %v", err)
 	}
 
 	// Print the data as a nicely formatted JSON object.
-	// This is a great way to see everything at once.
 	jsonData, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
 		log.Fatalf("Error marshalling to JSON: %v", err)

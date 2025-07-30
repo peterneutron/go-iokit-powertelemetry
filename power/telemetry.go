@@ -1,5 +1,5 @@
 // Package iokit provides direct access to macOS IOKit power and battery telemetry.
-package iokit
+package power
 
 /*
 #cgo LDFLAGS: -framework CoreFoundation -framework IOKit
@@ -49,7 +49,7 @@ typedef struct {
     long source_voltage;
     long source_amperage;
 
-	// --- NEW FIELDS FOR CELL VOLTAGES ---
+	// Cell Voltages
     long cell_voltages[16]; // Assume max 16 cells, more than enough
     int  cell_voltage_count;
 
@@ -116,7 +116,7 @@ static CFDictionaryRef get_dict_prop(CFDictionaryRef dict, const char *key) {
     return NULL;
 }
 
-// --- NEW HELPER FUNCTION for parsing arrays ---
+// Helper for parsing arrays.
 static void get_long_array_prop(CFDictionaryRef dict, const char *key, long *out_array, int max_count, int *final_count) {
     *final_count = 0;
     CFStringRef key_ref = CFStringCreateWithCString(NULL, key, kCFStringEncodingUTF8);
@@ -242,48 +242,36 @@ func GetBatteryInfo() (*BatteryInfo, error) {
 	// The C call was successful, now we translate the C struct into our public Go struct.
 	// This is where we also perform unit conversions (e.g., mV -> V).
 	info := &BatteryInfo{
-		IsCharging:   c_info.is_charging != 0,
-		IsConnected:  c_info.is_connected != 0,
-		FullyCharged: c_info.is_fully_charged != 0,
-
-		Health: Health{
-			CycleCount: int(c_info.cycle_count),
+		State: State{
+			IsCharging:   c_info.is_charging != 0,
+			IsConnected:  c_info.is_connected != 0,
+			FullyCharged: c_info.is_fully_charged != 0,
 		},
-		Capacity: Capacity{
+		Battery: Battery{
+			SerialNumber:    C.GoString(&c_info.serial_number[0]),
+			DeviceName:      C.GoString(&c_info.device_name[0]),
+			CycleCount:      int(c_info.cycle_count),
 			DesignCapacity:  int(c_info.design_capacity),
 			MaxCapacity:     int(c_info.max_capacity),
 			NominalCapacity: int(c_info.nominal_capacity),
-		},
-		Charge: Charge{
 			CurrentCapacity: int(c_info.current_capacity),
 			TimeToEmpty:     int(c_info.time_to_empty),
 			TimeToFull:      int(c_info.time_to_full),
-		},
-		Battery: Battery{
-			// IOKit reports temperature in hundredths of a degree Celsius.
-			Temperature: float64(c_info.temperature) / 100.0,
-		},
-		Power: Power{
-			// IOKit reports voltage in mV and amperage in mA.
-			Voltage:  float64(c_info.voltage) / 1000.0,
-			Amperage: float64(c_info.amperage) / 1000.0,
-		},
-		Hardware: Hardware{
-			SerialNumber: C.GoString(&c_info.serial_number[0]),
-			DeviceName:   C.GoString(&c_info.device_name[0]),
+			Temperature:     float64(c_info.temperature) / 100.0,
+			Voltage:         float64(c_info.voltage) / 1000.0,
+			Amperage:        float64(c_info.amperage) / 1000.0,
 		},
 		Adapter: Adapter{
-			Watts:       int(c_info.adapter_watts),
-			Voltage:     float64(c_info.adapter_voltage) / 1000.0,
-			Amperage:    float64(c_info.adapter_amperage) / 1000.0,
-			Description: C.GoString(&c_info.adapter_description[0]),
-		},
-		PowerSourceInput: PowerSourceInput{
-			Voltage:  float64(c_info.source_voltage) / 1000.0,
-			Amperage: float64(c_info.source_amperage) / 1000.0,
+			Description:   C.GoString(&c_info.adapter_description[0]),
+			MaxWatts:      int(c_info.adapter_watts),
+			MaxVoltage:    float64(c_info.adapter_voltage) / 1000.0,
+			MaxAmperage:   float64(c_info.adapter_amperage) / 1000.0,
+			InputVoltage:  float64(c_info.source_voltage) / 1000.0,
+			InputAmperage: float64(c_info.source_amperage) / 1000.0,
 		},
 	}
 
+	// Populate the individual cell voltages if they are available.
 	if c_info.cell_voltage_count > 0 {
 		// Create a Go slice of the exact correct size.
 		info.Battery.IndividualCellVoltages = make([]int, c_info.cell_voltage_count)
@@ -298,162 +286,70 @@ func GetBatteryInfo() (*BatteryInfo, error) {
 	}
 
 	// Calculate derived health metrics based on the collected data.
-	calculateHealthMetrics(info)
+	calculateDerivedMetrics(info)
 	return info, nil
 }
 
-// BatteryInfo holds a comprehensive snapshot of all data points retrieved
-// from the AppleSmartBattery service in IOKit.
-type BatteryInfo struct {
-	// IsCharging indicates if the battery is currently charging.
-	IsCharging bool
-	// IsConnected indicates if an external power source is connected.
-	IsConnected bool
-	// FullyCharged indicates if the battery is at 100% and not drawing charge.
-	FullyCharged bool
+// calculateDerivedMetrics populates the Calculations struct with health
+// percentages and live power flow data in Watts.
+func calculateDerivedMetrics(info *BatteryInfo) {
+	// --- Health Percentage Calculations ---
+	if info.Battery.DesignCapacity > 0 {
+		designCapF := float64(info.Battery.DesignCapacity)
 
-	// Health & Capacity - these values are the core of battery health assessment.
-	// All capacity values are in milliamp-hours (mAh).
-	Health           Health
-	Capacity         Capacity
-	Charge           Charge
-	Battery          Battery
-	Power            Power
-	Hardware         Hardware
-	Adapter          Adapter
-	PowerSourceInput PowerSourceInput
-	Calculations     Calculations
-}
+		healthByMax := (float64(info.Battery.MaxCapacity) / designCapF) * 100.0
+		info.Calculations.HealthByMaxCapacity = int(math.Round(healthByMax))
 
-// Health contains metrics related to the battery's long-term condition.
-type Health struct {
-	// CycleCount is the number of charge/discharge cycles the battery has undergone.
-	CycleCount int
-}
+		healthByNominal := (float64(info.Battery.NominalCapacity) / designCapF) * 100.0
+		info.Calculations.HealthByNominalCapacity = int(math.Round(healthByNominal))
 
-// Capacity stores the various milliamp-hour (mAh) capacity metrics.
-type Capacity struct {
-	// DesignCapacity is the "as-new" capacity specified by the manufacturer. This value does not change.
-	DesignCapacity int
-	// MaxCapacity is the battery's current maximum capacity, as estimated by the BMS.
-	// This value degrades over time. It corresponds to IOKit's `AppleRawMaxCapacity`.
-	MaxCapacity int
-	// NominalCapacity is a smoothed, less volatile capacity value. It is likely used by macOS
-	// for the "official" health percentage displayed in System Settings.
-	// It corresponds to IOKit's `NominalChargeCapacity`.
-	NominalCapacity int
-}
-
-// Charge contains the live state of the battery's charge.
-type Charge struct {
-	// CurrentCapacity is the current charge level in mAh.
-	CurrentCapacity int
-	// TimeToEmpty is the estimated minutes until the battery is empty (if discharging).
-	TimeToEmpty int
-	// TimeToFull is the estimated minutes until the battery is full (if charging).
-	TimeToFull int
-}
-
-// Temperature contains temperature readings in Celsius.
-type Battery struct {
-	// Battery is the primary temperature of the battery pack.
-	Temperature float64
-	// IndividualCellVoltages contains the voltage of each cell block in millivolts (mV).
-	IndividualCellVoltages []int
-}
-
-// Power contains live electrical data for the battery.
-type Power struct {
-	// Voltage is the current battery voltage in Volts.
-	Voltage float64
-	// Amperage is the current flowing into/out of the battery in Amps.
-	// A negative value indicates the battery is discharging.
-	Amperage float64
-}
-
-// Hardware contains identifiers for the battery hardware.
-type Hardware struct {
-	// SerialNumber is the battery's unique serial number.
-	SerialNumber string
-	// DeviceName is the model name of the battery management system (e.g., "bq40z651").
-	DeviceName string
-}
-
-// Adapter contains information about the connected power adapter.
-type Adapter struct {
-	// Watts is the negotiated power rating of the adapter in Watts.
-	Watts int
-	// Voltage is the negotiated voltage in Volts.
-	Voltage float64
-	// Amperage is the maximum current the adapter can provide at the negotiated voltage, in Amps.
-	Amperage float64
-	// Description is a system-provided description (e.g., "pd charger").
-	Description string
-}
-
-// PowerSourceInput contains live electrical data for the power being drawn
-// from the connected adapter.
-type PowerSourceInput struct {
-	// Voltage is the actual voltage being supplied by the adapter in Volts.
-	Voltage float64
-	// Amperage is the actual current being drawn by the system in Amps.
-	Amperage float64
-}
-
-// Calculations contains experimental, derived health metrics based on the raw data.
-// These are provided for convenience and may not match official system reporting.
-type Calculations struct {
-	// HealthPercentage is the "physical" health based on raw max capacity. (AppleRawMaxCapacity / DesignCapacity)
-	HealthByMaxCapacity int
-	// NominalHealthPercentage is the health based on the more stable nominal capacity. (NominalCapacity / DesignCapacity)
-	HealthByNominalCapacity int
-	// EstimatedOfficialHealth is our reverse-engineered formula, blending NominalHealth and a bonus/penalty for cell voltage drift.
-	ConditionAdjustedHealth int
-}
-
-func calculateHealthMetrics(info *BatteryInfo) {
-	// Avoid division by zero if DesignCapacity is somehow missing
-	if info.Capacity.DesignCapacity == 0 {
-		return
-	}
-
-	designCapF := float64(info.Capacity.DesignCapacity)
-
-	// Calculate health based on the raw maximum capacity.
-	healthByMax := (float64(info.Capacity.MaxCapacity) / designCapF) * 100.0
-	info.Calculations.HealthByMaxCapacity = int(math.Round(healthByMax))
-
-	// Calculate health based on the smoothed, nominal capacity. This is our base for further calcs.
-	healthByNominal := (float64(info.Capacity.NominalCapacity) / designCapF) * 100.0
-	info.Calculations.HealthByNominalCapacity = int(math.Round(healthByNominal))
-
-	// Calculate the condition modifier based on cell voltage drift.
-	var conditionModifier float64
-	if len(info.Battery.IndividualCellVoltages) > 1 {
-		minV, maxV := findMinMax(info.Battery.IndividualCellVoltages)
-		drift := maxV - minV
-
-		switch {
-		case drift <= 5:
-			conditionModifier = 2.5 // Excellent condition bonus
-		case drift <= 15:
-			conditionModifier = 1.0 // Good condition bonus
-		case drift <= 30:
-			conditionModifier = 0.0 // Normal condition
-		case drift <= 50:
-			conditionModifier = -2.0 // Fair condition penalty
-		default:
-			conditionModifier = -10.0 // Poor condition penalty
+		var conditionModifier float64
+		if len(info.Battery.IndividualCellVoltages) > 1 {
+			minV, maxV := findMinMax(info.Battery.IndividualCellVoltages)
+			drift := maxV - minV
+			switch {
+			case drift <= 5:
+				conditionModifier = 2.5
+			case drift <= 15:
+				conditionModifier = 1.0
+			case drift <= 30:
+				conditionModifier = 0.0
+			case drift <= 50:
+				conditionModifier = -2.0
+			default:
+				conditionModifier = -10.0
+			}
 		}
+		info.Calculations.ConditionAdjustedHealth = int(math.Round(healthByNominal + conditionModifier))
 	}
 
-	// Apply the modifier to the nominal health to get our final estimate.
-	adjustedHealth := healthByNominal + conditionModifier
-	info.Calculations.ConditionAdjustedHealth = int(math.Round(adjustedHealth))
+	// --- Power Flow Calculations (Watts = Volts * Amps) ---
+
+	// Helper function to truncate a float64 to two decimal places without rounding.
+	truncate := func(f float64) float64 {
+		return math.Trunc(f*100) / 100
+	}
+
+	// Power being drawn from the AC adapter.
+	acPower := info.Adapter.InputVoltage * info.Adapter.InputAmperage
+	info.Calculations.ACPower = truncate(acPower)
+
+	// Power flowing into (+) or out of (-) the battery.
+	batteryPower := info.Battery.Voltage * info.Battery.Amperage
+	info.Calculations.BatteryPower = truncate(batteryPower)
+
+	// The power consumed by the system (CPU, screen, etc.) is the combination of
+	// power from the AC adapter and power from the battery.
+	// If the battery is discharging, its power contribution is negative.
+	systemPower := info.Calculations.ACPower - info.Calculations.BatteryPower
+	info.Calculations.SystemPower = truncate(systemPower)
 }
 
 // Helper to find min/max in a slice
 func findMinMax(a []int) (min int, max int) {
+	if len(a) == 0 {
+		return 0, 0
+	}
 	min = a[0]
 	max = a[0]
 	for _, value := range a {
@@ -465,4 +361,78 @@ func findMinMax(a []int) (min int, max int) {
 		}
 	}
 	return min, max
+}
+
+// BatteryInfo holds a comprehensive snapshot of all data points retrieved
+// from the AppleSmartBattery service in IOKit.
+type BatteryInfo struct {
+	State        State
+	Battery      Battery
+	Adapter      Adapter
+	Calculations Calculations
+}
+
+// State holds booleans describing the current charging status.
+type State struct {
+	IsCharging   bool
+	IsConnected  bool
+	FullyCharged bool
+}
+
+// Battery contains all data points directly related to the battery itself,
+// from its hardware identifiers to its live electrical state.
+type Battery struct {
+	// Identity
+	SerialNumber string
+	DeviceName   string
+
+	// Health & Capacity
+	CycleCount      int
+	DesignCapacity  int // in mAh
+	MaxCapacity     int // in mAh
+	NominalCapacity int // in mAh
+
+	// Live Charge & Readings
+	CurrentCapacity        int     // in mAh
+	TimeToEmpty            int     // in minutes
+	TimeToFull             int     // in minutes
+	Temperature            float64 // in Celsius
+	Voltage                float64 // in Volts
+	Amperage               float64 // in Amps (negative when discharging)
+	IndividualCellVoltages []int   // in mV
+}
+
+// Adapter holds information about the connected power source.
+type Adapter struct {
+	// Description is a system-provided string (e.g., "pd charger").
+	Description string
+
+	// MaxWatts is the negotiated power rating from the handshake (e.g., 96).
+	MaxWatts int
+
+	// MaxVoltage is the negotiated voltage from the handshake (e.g., 20.0V).
+	MaxVoltage float64
+
+	// MaxAmperage is the maximum current the adapter can provide at the
+	// negotiated voltage (e.g., 4.8A).
+	MaxAmperage float64
+
+	// InputVoltage is the actual voltage being supplied by the adapter right now.
+	InputVoltage float64
+
+	// InputAmperage is the actual current being drawn by the system right now.
+	InputAmperage float64
+}
+
+// Calculations contains derived, user-friendly metrics.
+type Calculations struct {
+	// Health percentages
+	HealthByMaxCapacity     int
+	HealthByNominalCapacity int
+	ConditionAdjustedHealth int
+
+	// Live power flow in Watts
+	ACPower      float64 // Power being drawn from the AC adapter.
+	BatteryPower float64 // Power flowing into(+) or out of(-) the battery.
+	SystemPower  float64 // Power being consumed by the rest of the system.
 }

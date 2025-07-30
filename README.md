@@ -60,23 +60,27 @@ These values are read directly from IOKit and form the basis for all health calc
 | `Capacity.MaxCapacity`    | `AppleRawMaxCapacity`     | The current, real-world maximum capacity. This reflects aging and any temporary limits imposed by macOS (e.g., Optimized Battery Charging) and can fluctuate.     |
 | `Capacity.NominalCapacity`| `NominalChargeCapacity`   | A more stable, smoothed historical capacity value that is less prone to short-term fluctuations.        |
 
-### How Health is Calculated
+### How Health and Power are Calculated
 
-The `Calculations` struct provides several health percentages, rounded to the nearest whole number.
+The `Calculations` struct provides several derived metrics for convenience. Health percentages are rounded to the nearest whole number, and wattages are truncated to two decimal places.
 
-> #### `Calculations.HealthByMaxCapacity`
->
-> **Formula:** `(MaxCapacity / DesignCapacity) * 100`
+-   **`Calculations.HealthByMaxCapacity` (int)**
+    This represents the "true" physical health of the battery's chemistry, calculated as `(Battery.MaxCapacity / Battery.DesignCapacity) * 100`. It directly reflects the current maximum charge the battery can hold compared to when it was new.
 
-> #### `Calculations.HealthByNominalCapacity`
->
-> **Formula:** `(NominalCapacity / DesignCapacity) * 100`
+-   **`Calculations.HealthByNominalCapacity` (int)**
+    This provides a more stable health percentage that is less affected by recent charge/discharge cycles, making it a reliable historical indicator. It is calculated as `(Battery.NominalCapacity / Battery.DesignCapacity) * 100`.
 
-> #### `Calculations.ConditionAdjustedHealth`
->
-> **Formula:** `HealthByNominalCapacity + Condition Modifier`
->
-> This is an experimental metric that attempts to estimate the health percentage shown by macOS. It starts with the stable `HealthByNominalCapacity` and applies a bonus or penalty based on the **voltage drift** between the battery's internal cell blocks (`Battery.IndividualCellVoltages`). A well-balanced battery with low drift receives a health bonus, while an imbalanced battery is penalized, providing a more holistic view of its condition.
+-   **`Calculations.ConditionAdjustedHealth` (int)**
+    This is our reverse-engineered metric that attempts to estimate the health percentage shown by macOS. It starts with the stable `HealthByNominalCapacity` and applies a bonus or penalty based on the **voltage drift** between the battery's internal cell blocks (`Battery.IndividualCellVoltages`). A well-balanced battery receives a health bonus, while an imbalanced battery is penalized.
+
+-   **`Calculations.ACPower` (float64)**
+    The total power in Watts currently being drawn from the AC adapter. This value will be zero if the adapter is not connected. It is calculated as `Adapter.InputVoltage * Adapter.InputAmperage`.
+
+-   **`Calculations.BatteryPower` (float64)**
+    The power in Watts currently flowing into or out of the battery. A **positive** value indicates the battery is charging, while a **negative** value indicates it is discharging. It is calculated as `Battery.Voltage * Battery.Amperage`.
+
+-   **`Calculations.SystemPower` (float64)**
+    An estimate of the power in Watts being consumed by the system hardware (CPU, display, etc.). This value represents the net power usage of the machine itself, calculated as `ACPower - BatteryPower`.
 
 ## Full Data Example
 
@@ -97,52 +101,45 @@ You can run the included example to see all available data fields.
 
 ```json
 {
-  "IsCharging": false,
-  "IsConnected": false,
-  "FullyCharged": false,
-  "Health": {
-    "CycleCount": 180
-  },
-  "Capacity": {
-    "DesignCapacity": 8579,
-    "MaxCapacity": 7701,
-    "NominalCapacity": 7945
-  },
-  "Charge": {
-    "CurrentCapacity": 2745,
-    "TimeToEmpty": 178,
-    "TimeToFull": 65535
+  "State": {
+    "IsCharging": true,
+    "IsConnected": true,
+    "FullyCharged": false
   },
   "Battery": {
-    "Temperature": 30.6,
+    "SerialNumber": "F8YH5900JDP00000E7",
+    "DeviceName": "bq40z651",
+    "CycleCount": 180,
+    "DesignCapacity": 8579,
+    "MaxCapacity": 7697,
+    "NominalCapacity": 7941,
+    "CurrentCapacity": 3790,
+    "TimeToEmpty": 65535,
+    "TimeToFull": 124,
+    "Temperature": 30.41,
+    "Voltage": 11.932,
+    "Amperage": 4.437,
     "IndividualCellVoltages": [
-      3783,
-      3785,
-      3784
+      3979,
+      3977,
+      3976
     ]
   },
-  "Power": {
-    "Voltage": 11.353,
-    "Amperage": -0.92
-  },
-  "Hardware": {
-    "SerialNumber": "xxxxxxxxxxxxxxxxxx",
-    "DeviceName": "xxxxxxxx"
-  },
   "Adapter": {
-    "Watts": 65,
-    "Voltage": 20,
-    "Amperage": 3.25,
-    "Description": "pd charger"
-  },
-  "PowerSourceInput": {
-    "Voltage": 20.188,
-    "Amperage": 0.005
+    "Description": "pd charger",
+    "MaxWatts": 65,
+    "MaxVoltage": 20,
+    "MaxAmperage": 3.25,
+    "InputVoltage": 19.517,
+    "InputAmperage": 3.213
   },
   "Calculations": {
     "HealthByMaxCapacity": 90,
     "HealthByNominalCapacity": 93,
-    "ConditionAdjustedHealth": 95
+    "ConditionAdjustedHealth": 95,
+    "ACPower": 62.7,
+    "BatteryPower": 52.94,
+    "SystemPower": 9.76
   }
 }
 ```
